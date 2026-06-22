@@ -9,7 +9,7 @@ function json(payload, init = {}) {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      'Cache-Control': 'public, max-age=300',
+      'Cache-Control': 'no-store',
       ...(init.headers ?? {}),
     },
   })
