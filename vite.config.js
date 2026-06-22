@@ -33,7 +33,7 @@ async function fetchYahooHistory(start, end) {
       price: Number(closes[index]),
       source: 'Yahoo Finance BTC-USD daily close',
     }))
-    .filter((point) => Number.isFinite(point.price))
+    .filter((point) => Number.isFinite(point.price) && point.price > 0)
 }
 
 async function fetchBinanceHistory(start, end) {

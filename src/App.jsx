@@ -134,7 +134,7 @@ async function fetchBtcHistory(startDate, endDate) {
   const payload = await response.json()
   const seen = new Map()
   payload.prices.forEach(({ date, price, source }) => {
-    if (Number.isFinite(price)) seen.set(date, { date, price, source })
+    if (Number.isFinite(price) && price > 0) seen.set(date, { date, price, source })
   })
   return [...seen.values()].sort((a, b) => a.date.localeCompare(b.date))
 }
