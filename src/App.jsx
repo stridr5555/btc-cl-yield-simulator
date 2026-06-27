@@ -80,6 +80,19 @@ function compactUsd(value) {
   }).format(Number.isFinite(value) ? value : 0)
 }
 
+function smartUsd(value, digits = 0) {
+  return Math.abs(value ?? 0) >= 1_000_000 ? compactUsd(value) : formatUsd(value, digits)
+}
+
+function compactPct(value) {
+  const safeValue = Number.isFinite(value) ? value : 0
+  if (Math.abs(safeValue) < 10_000) return `${safeValue.toFixed(0)}%`
+  return `${new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(safeValue)}%`
+}
+
 function niceDate(date) {
   const parsedDate =
     typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)
@@ -218,6 +231,10 @@ function simulateStrategy(points, settings, mode) {
   let maxValue = settings.initialValue
   let daysInRange = 0
   let outOfRangeDays = 0
+  let principalBaseline = settings.initialValue
+  let lockedLoss = 0
+  let lastLockedLoss = 0
+  let upsideResets = 0
   const delayedRebalanceDays = Math.max(1, Math.ceil(settings.rebalanceDelayHours / 24))
 
   return points.map((point, index) => {
@@ -232,10 +249,17 @@ function simulateStrategy(points, settings, mode) {
         (settings.rebalanceMode === 'passive' && outOfRangeDays >= delayedRebalanceDays))
 
     if (shouldRebalance) {
+      const isDownsideReset = point.price < position.center
+      lastLockedLoss = isDownsideReset ? Math.max(0, principalBaseline - current.value) : 0
+      lockedLoss += lastLockedLoss
+      upsideResets += !isDownsideReset && current.value > principalBaseline ? current.value - principalBaseline : 0
       position = createPosition(current.value, point.price, settings.rangePct)
       current = valuePosition(position, point.price)
+      principalBaseline = current.value
       rebalances += 1
       outOfRangeDays = 0
+    } else {
+      lastLockedLoss = 0
     }
 
     const inRange = point.price >= position.lower && point.price <= position.upper
@@ -256,6 +280,7 @@ function simulateStrategy(points, settings, mode) {
           settings.rebalanceMode === 'auto'
             ? createPosition(current.value + reinvestAmount, point.price, settings.rangePct)
             : createPositionWithBounds(current.value + reinvestAmount, point.price, position.lower, position.upper)
+        principalBaseline += reinvestAmount
         pendingFees -= reinvestAmount
         compounds += eventCount
       }
@@ -306,6 +331,11 @@ function simulateStrategy(points, settings, mode) {
       compounds,
       harvests,
       daysInRange,
+      principalBaseline,
+      lastLockedLoss,
+      lockedLoss,
+      upsideResets,
+      feesAfterLockedLoss: totalFees - lockedLoss,
     }
   })
 }
@@ -325,6 +355,10 @@ function buildSimulation(points, settings) {
       compoundDrawdown: row.drawdown,
       compoundIl: row.ilVsHodl,
       compoundRebalances: row.rebalances,
+      compoundLockedLoss: row.lockedLoss,
+      compoundLastLockedLoss: row.lastLockedLoss,
+      compoundFeesAfterLockedLoss: row.feesAfterLockedLoss,
+      compoundUpsideResets: row.upsideResets,
       compoundBtcShare: row.btcShare,
       compoundStableShare: row.stableShare,
       harvestValue: other.walletValue,
@@ -335,6 +369,10 @@ function buildSimulation(points, settings) {
       harvestDrawdown: other.drawdown,
       harvestIl: other.ilVsHodl,
       harvestRebalances: other.rebalances,
+      harvestLockedLoss: other.lockedLoss,
+      harvestLastLockedLoss: other.lastLockedLoss,
+      harvestFeesAfterLockedLoss: other.feesAfterLockedLoss,
+      harvestUpsideResets: other.upsideResets,
       harvestBtcShare: other.btcShare,
       harvestStableShare: other.stableShare,
       hodlValue: row.hodlValue,
@@ -520,6 +558,10 @@ function App() {
       'sqrt_drag_vs_50_50_pct',
       'compound_il_pct',
       'harvest_il_pct',
+      'compound_locked_loss',
+      'harvest_locked_loss',
+      'compound_fees_after_locked_loss',
+      'harvest_fees_after_locked_loss',
     ]
     const lines = simulation.map((row) =>
       [
@@ -537,6 +579,10 @@ function App() {
         row.sqrtDragVs5050,
         row.compoundIl,
         row.harvestIl,
+        row.compoundLockedLoss,
+        row.harvestLockedLoss,
+        row.compoundFeesAfterLockedLoss,
+        row.harvestFeesAfterLockedLoss,
       ].join(','),
     )
     const blob = new Blob([[headers.join(','), ...lines].join('\n')], { type: 'text/csv' })
@@ -722,8 +768,8 @@ function App() {
           <Kpi
             icon={Wallet}
             label="Compound every $2"
-            value={formatUsd(final.compoundValue)}
-            hint={`${formatPct(metricDelta(final.compoundValue, settings.initialValue))} total return`}
+            value={smartUsd(final.compoundValue)}
+            hint={`${compactPct(metricDelta(final.compoundValue, settings.initialValue))} total return`}
             accent="#167a7f"
           />
           <Kpi
@@ -735,9 +781,9 @@ function App() {
           />
           <Kpi
             icon={Activity}
-            label="Range low"
-            value={formatUsd(bear.price)}
-            hint={bear.date ? niceDate(bear.date) : 'No price point'}
+            label="Locked downside loss"
+            value={smartUsd(final.compoundLockedLoss)}
+            hint={`${smartUsd(final.compoundFeesAfterLockedLoss)} fees after locked loss`}
             accent="#2364aa"
           />
           <Kpi
@@ -750,7 +796,7 @@ function App() {
         </section>
 
         <section className={`chart-grid ${focus}`}>
-          <div className="chart-card primary">
+          <div className="chart-card primary overview-panel">
             <div className="chart-head">
               <div>
                 <h3>Portfolio value versus BTC price</h3>
@@ -827,7 +873,7 @@ function App() {
             </ResponsiveContainer>
           </div>
 
-          <div className="chart-card">
+          <div className="chart-card range-panel">
             <div className="chart-head">
               <div>
                 <h3>Range and rebalances</h3>
@@ -851,7 +897,7 @@ function App() {
             </ResponsiveContainer>
           </div>
 
-          <div className="chart-card">
+          <div className="chart-card risk-panel">
             <div className="chart-head">
               <div>
                 <h3>Drawdown profile</h3>
@@ -862,7 +908,7 @@ function App() {
               <LineChart data={rows} syncId="simulation">
                 <CartesianGrid stroke="#dce5e7" vertical={false} />
                 <XAxis dataKey="label" hide />
-                <YAxis tickFormatter={(v) => `${v}%`} tickLine={false} axisLine={false} width={48} />
+                <YAxis tickFormatter={compactPct} tickLine={false} axisLine={false} width={62} />
                 <Tooltip formatter={(value) => formatPct(value, 2)} />
                 <ReferenceLine y={0} stroke="#8c989b" />
                 <Line
@@ -883,7 +929,49 @@ function App() {
             </ResponsiveContainer>
           </div>
 
-          <div className="chart-card">
+          <div className="chart-card risk-panel">
+            <div className="chart-head">
+              <div>
+                <h3>Locked rebalance loss</h3>
+                <p>Downside resets crystallize loss into this ledger; later upside resets do not erase it.</p>
+              </div>
+            </div>
+            <ResponsiveContainer width="100%" height={260}>
+              <ComposedChart data={rows} syncId="simulation">
+                <CartesianGrid stroke="#dce5e7" vertical={false} />
+                <XAxis dataKey="label" hide />
+                <YAxis tickFormatter={compactUsd} tickLine={false} axisLine={false} width={70} />
+                <Tooltip formatter={(value) => formatUsd(value, 2)} />
+                <Legend />
+                <Area
+                  type="monotone"
+                  dataKey="compoundLockedLoss"
+                  name="Compound locked loss"
+                  stroke="#c6533f"
+                  fill="#f2c8bd"
+                  fillOpacity={0.42}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="compoundFees"
+                  name="Compound fees earned"
+                  stroke="#167a7f"
+                  strokeWidth={2}
+                  dot={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="harvestLockedLoss"
+                  name="Harvest locked loss"
+                  stroke="#9a6840"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="chart-card risk-panel">
             <div className="chart-head">
               <div>
                 <h3>Impermanent loss lens</h3>
@@ -894,7 +982,7 @@ function App() {
               <LineChart data={rows} syncId="simulation">
                 <CartesianGrid stroke="#dce5e7" vertical={false} />
                 <XAxis dataKey="label" hide />
-                <YAxis tickFormatter={(v) => `${v}%`} tickLine={false} axisLine={false} width={48} />
+                <YAxis tickFormatter={compactPct} tickLine={false} axisLine={false} width={62} />
                 <Tooltip formatter={(value) => formatPct(value, 2)} />
                 <ReferenceLine y={0} stroke="#8c989b" />
                 <Line dataKey="compoundIl" name="Compound IL lens" stroke="#167a7f" strokeWidth={2} dot={false} />
@@ -903,7 +991,7 @@ function App() {
             </ResponsiveContainer>
           </div>
 
-          <div className="chart-card">
+          <div className="chart-card overview-panel">
             <div className="chart-head">
               <div>
                 <h3>Sqrt exposure drag</h3>
@@ -943,7 +1031,7 @@ function App() {
             </ResponsiveContainer>
           </div>
 
-          <div className="chart-card split">
+          <div className="chart-card split overview-panel">
             <div>
               <div className="chart-head">
                 <div>
@@ -995,7 +1083,7 @@ function App() {
             Model Notes
           </div>
           <ul className="notes">
-            <li>BTC is token0 and the stablecoin is token1; price is stable per BTC.</li>
+            <li>BTC is token 0 and the stablecoin is token 1; price is stable per BTC.</li>
             <li>Liquidity uses Uniswap v3 sqrt-price amount0/amount1 formulas.</li>
             <li>Fees accrue daily at APR / 365 while the position is inside range.</li>
             <li>
@@ -1003,6 +1091,7 @@ function App() {
                 ? 'Auto mode recenters into a fresh +/- range at the daily close when price exits.'
                 : `Delayed mode leaves the band alone first; fees stop while out of range, then it recenters after ${settings.rebalanceDelayHours} hours outside.`}
             </li>
+            <li>Downside rebalances add to locked loss; later upside rebalances start from the new lower base.</li>
             <li>Gas, slippage, protocol fees, MEV, taxes, and pool volume limits are excluded.</li>
           </ul>
         </div>
@@ -1016,11 +1105,19 @@ function App() {
         <div className="stat-list">
           <div>
             <span>Compound fees earned</span>
-            <strong>{formatUsd(final.compoundFees)}</strong>
+            <strong>{smartUsd(final.compoundFees)}</strong>
           </div>
           <div>
             <span>Harvest fees earned</span>
             <strong>{formatUsd(final.harvestFees)}</strong>
+          </div>
+          <div>
+            <span>Locked downside loss</span>
+            <strong>{smartUsd(final.compoundLockedLoss)}</strong>
+          </div>
+          <div>
+            <span>Fees after locked loss</span>
+            <strong>{smartUsd(final.compoundFeesAfterLockedLoss)}</strong>
           </div>
           <div>
             <span>Range resets</span>
@@ -1039,3 +1136,4 @@ function App() {
 }
 
 export default App
+

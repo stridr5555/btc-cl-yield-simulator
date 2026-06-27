@@ -341,6 +341,7 @@
 }
 
 .chart-card {
+  display: none;
   min-width: 0;
   padding: 16px;
   border: 1px solid #d7e2e4;
@@ -353,9 +354,22 @@
   grid-column: 1 / -1;
 }
 
+.chart-grid.overview .overview-panel,
+.chart-grid.risk .risk-panel,
+.chart-grid.range .range-panel {
+  display: block;
+}
+
+.chart-grid.overview .chart-card.split {
+  display: grid;
+}
+
+.chart-grid.range .range-panel {
+  grid-column: 1 / -1;
+}
+
 .chart-card.split {
   grid-column: 1 / -1;
-  display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
@@ -435,6 +449,14 @@
   border: 1px solid #cbd9dc !important;
   border-radius: 8px !important;
   box-shadow: 0 12px 30px rgba(32, 50, 56, 0.14) !important;
+}
+
+.recharts-cartesian-axis-tick-value {
+  fill: #66777d;
+}
+
+.recharts-legend-item-text {
+  color: #52656b !important;
 }
 
 .recharts-brush .recharts-brush-slide {
